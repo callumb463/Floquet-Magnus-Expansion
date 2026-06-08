@@ -20,7 +20,7 @@ def __main__():
     app.mainloop()
 
 def H_func(t):
-    return 0.5 * np.sin(t) * np.array([[0, 1], [1, 0]])
+    return 0.5 * np.sin(t) * np.array([[2, 1], [0.4, 0.5]])
 
 ###STILL NEED TO SORT OUT DIMENSIONS AUTOMATICALLY
 
@@ -62,6 +62,7 @@ def floquet_magnus_expansion(period, order):
                 [commutator(Lambda[m-1], T[n-m-1, j-1]) for m in range(1, n-j+1)],
                 axis=0
             )
+            
             W[n-1, j] = np.sum(
                 [commutator(Lambda[m-1], W[n-m-1, j-1]) for m in range(1, n-j+1)],
                 axis=0
@@ -73,14 +74,20 @@ def floquet_magnus_expansion(period, order):
         )
 
         F[n-1] = np.mean(G[n-1], axis=0)
+        T[n-1, 0] = F[n-1]
         Lambda[n-1] = cumulative_trapezoid(
             G[n-1] - F[n-1][np.newaxis, :, :], t_grid, axis=0, initial=0
         )
 
+
+    return Lambda
 
 def commutator(A, B):
     return A @ B - B @ A
 
 if __name__ == "__main__":
     #__main__()
-    floquet_magnus_expansion(2*np.pi, 3)
+    Lambda = floquet_magnus_expansion(2*np.pi, 4)
+    print("Lambda_1:\n", Lambda[0])
+    print("Lambda_2:\n", Lambda[1])
+    print("Lambda_3:\n", Lambda[2])
