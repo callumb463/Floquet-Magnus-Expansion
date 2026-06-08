@@ -21,16 +21,14 @@ def __main__():
     app.mainloop()
 
 def H_func(t):
-    return 0.5 * np.sin(t) * np.array([[2, 1], [0.4, 0.5]])
+    return 0.5 * np.sin(t) * np.array([[0, 1], [1, 0]])
 
 
-def floquet_magnus_expansion(H_func, period, order):
-    N_t = 1000
-    t_grid = np.linspace(0, period, N_t)
+def floquet_magnus_expansion(H_func, t_grid, order):
     dim = H_func(0).shape[0]
     B = [float(bernoulli(n)/factorial(n)) for n in range(order + 1)]
 
-    H = np.zeros((N_t, dim, dim), dtype=complex)
+    H = np.zeros((len(t_grid), dim, dim), dtype=complex)
     for i, t in enumerate(t_grid):
         H[i] = H_func(t)
     F = np.empty(order, dtype=object)
@@ -79,28 +77,25 @@ def floquet_magnus_expansion(H_func, period, order):
 
     return Lambda, F
 
-def exact_evolution(H_func, period):
-    N_t = 1000
-    t_grid = np.linspace(0, period, N_t)
+def exact_evolution(H_func, t_grid, eval_index):
     U = np.eye(H_func(0).shape[0], dtype=complex)
-    for i in range(1, N_t):
+    for i in range(1, eval_index+1):
         dt = t_grid[i] - t_grid[i-1]
         U = expm(-1j * H_func(t_grid[i]) * dt) @ U
     return U
 
 #NEED TO ADD THE CORRECT TIME EVALUATION FOR THE FLOQUET-MAGNUS EVOLUTION OPERATOR
-def FM_evolution(Lambda, F, t):
-    Lambda_sum = sum(Lambda)
-    F_sum = sum(F)
-
-    kick_op = expm(-1j * Lambda_sum)
-    floquet_op = expm(-1j * F_sum*t)
-    U_FM = kick_op @ floquet_op @ np.linalg.inv(kick_op)
+def FM_evolution(Lambda, order, F, t_grid, eval_index):
+    Lambda_sum = sum(Lambda[n] for n in range(order))
+    F_sum = sum(F[n] for n in range(order))
+    kick_op = expm(-1j * Lambda_sum[eval_index])
+    floquet_op = expm(-1j * F_sum * t_grid[eval_index])
+    U_FM = kick_op @ floquet_op
     return U_FM
 
 def evaluate_accuracy(U1, U2):
     fro_norm = np.linalg.norm(U1 - U2, 'fro')
-    fidelity = np.abs(np.trace(U1.conj().T @ U2)) / (U1.shape[0] * U1.shape[0])
+    fidelity = abs(np.trace(U1.conj().T @ U2))**2 / U1.shape[0]**2
     return fro_norm, fidelity
 
 def plot(Lambda, order):
@@ -120,17 +115,22 @@ def commutator(A, B):
 
 if __name__ == "__main__":
     period = 2 * np.pi
-    order = 12
-    Lambda, F = floquet_magnus_expansion(H_func, period, order)
-    
-    plot(Lambda, order)
-    """
-    U_FM = FM_evolution(Lambda, F, period)
-    U_exact = exact_evolution(H_func, period)
+    order = 10
+    t_0 = 0
+    N_t = 1000
 
+    t_grid = np.linspace(0, period, N_t)
+    Lambda, F = floquet_magnus_expansion(H_func, t_grid, order)
+    
+    #plot(Lambda, order)
+    U_exact = exact_evolution(H_func, t_grid, 400)
+    U_FM = FM_evolution(Lambda, order, F, t_grid, 400)
+    #print(U_exact @ U_exact.conj().T) #Check unitarity of exact evolution operator
+    #print(U_FM @ U_FM.conj().T) #Check unitarity of FM evolution operator
+
+    
 
     fro_norm, fidelity = evaluate_accuracy(U_FM, U_exact)
     print(f"Frobenius Norm: {fro_norm}")
-    print(f"Fidelity: {fidelity}")
-    """
+    print(f"Fidelity: {fidelity}") 
     
