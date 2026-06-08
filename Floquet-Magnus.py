@@ -2,6 +2,7 @@ import numpy as np
 from sympy import bernoulli, factorial
 from scipy.linalg import expm
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Button, Slider
 import customtkinter as ctk
 from scipy.integrate import cumulative_trapezoid
 
@@ -21,13 +22,19 @@ def __main__():
     app.mainloop()
 
 def H_func(t):
-    return 0.5 * np.sin(t) * np.array([[0, 1], [1, 0]])
+    Sx = (1/np.sqrt(2)) * np.array([[0, 1, 0],
+                                    [1, 0, 1],
+                                    [0, 1, 0]], dtype=complex)
+    Sz = np.array([[1, 0, 0],
+                   [0, 0, 0],
+                   [0, 0,-1]], dtype=complex)
+    # Static Sz + oscillating Sx — these don't commute
+    return Sz + 0.3 * np.sin(5*t) * Sx
 
 
 def floquet_magnus_expansion(H_func, t_grid, order):
     dim = H_func(0).shape[0]
     B = [float(bernoulli(n)/factorial(n)) for n in range(order + 1)]
-
     H = np.zeros((len(t_grid), dim, dim), dtype=complex)
     for i, t in enumerate(t_grid):
         H[i] = H_func(t)
@@ -36,27 +43,24 @@ def floquet_magnus_expansion(H_func, t_grid, order):
     W = np.empty((order+1, order+1), dtype=object)
     T = np.empty((order+1, order+1), dtype=object)
     Lambda = np.empty(order, dtype=object)
+    
 
-    # Initialize all slots to zero arrays
-    #THIS MIGHT BE CONVOLUTED, I can maybe initialise them as zeros above
-    for i in range(order+1):
-        for j in range(order+1):
-            T[i, j] = np.zeros((dim, dim), dtype=complex)
-            W[i, j] = np.zeros((N_t, dim, dim), dtype=complex)
-
-    # Initialize F[0], G[0], T[0, 0], W[0, 0], and Lambda[0]
+    # Initialize F[0], G[0], T[0, 0], W[n, 0], and Lambda[0]
     F[0] = np.mean(H, axis=0)
     G[0] = H.copy()
     T[0, 0] = F[0]
     W[0, 0] = H.copy()
+    for i in range(order+1):
+        W[i, 0] = np.zeros((N_t, dim, dim), dtype=complex)
     Lambda[0] = cumulative_trapezoid(H - F[0][np.newaxis, :, :], t_grid, axis=0, initial=0)
 
     
     #Iterate to compute higher order terms
-    #Might be broken. the higher order terms are all zero
-    #Room for optimisation. I can store commutator calculations to avoid redundant computations
     for n in range(2, order + 1):
         for j in range(1, n):
+            for m in range(1, n-j+1):
+                assert T[n-m-1, j-1] is not None, f"T[{n-m-1},{j-1}] accessed but never set"
+                assert W[n-m-1, j-1] is not None, f"W[{n-m-1},{j-1}] accessed but never set"
             T[n-1, j] = np.sum(
                 [commutator(Lambda[m-1], T[n-m-1, j-1]) for m in range(1, n-j+1)],
                 axis=0
@@ -66,14 +70,12 @@ def floquet_magnus_expansion(H_func, t_grid, order):
                 [commutator(Lambda[m-1], W[n-m-1, j-1]) for m in range(1, n-j+1)],
                 axis=0
             )
-
-        G[n-1] = sum([B[k] * ((-1j)**k) * (W[n-1, k] + ((-1)**(k+1)) * T[n-1, k]) for k in range(0, n)])
+        G[n-1] = sum([B[k] * ((-1j)**k) * (W[n-1, k] + ((-1)**(k+1)) * T[n-1, k]) for k in range(1, n)])
         F[n-1] = np.mean(G[n-1], axis=0)
         T[n-1, 0] = F[n-1]
         Lambda[n-1] = cumulative_trapezoid(
             G[n-1] - F[n-1][np.newaxis, :, :], t_grid, axis=0, initial=0
         )
-
 
     return Lambda, F
 
@@ -84,7 +86,6 @@ def exact_evolution(H_func, t_grid, eval_index):
         U = expm(-1j * H_func(t_grid[i]) * dt) @ U
     return U
 
-#NEED TO ADD THE CORRECT TIME EVALUATION FOR THE FLOQUET-MAGNUS EVOLUTION OPERATOR
 def FM_evolution(Lambda, order, F, t_grid, eval_index):
     Lambda_sum = sum(Lambda[n] for n in range(order))
     F_sum = sum(F[n] for n in range(order))
@@ -102,34 +103,33 @@ def plot(Lambda, order):
     fig, axes = plt.subplots(1, figsize=(8, 4))
 
     peaks = [np.max(np.abs(Lambda[n])) for n in range(order)]
-    axes.semilogy(range(order), peaks, 'o-')
+    semilog = axes.semilogy(range(order), peaks, 'o-')
     axes.set_xlabel("Order")
     axes.set_ylabel("Peak")
     axes.set_title("Convergence of Lambda corrections")
 
     plt.tight_layout()
     plt.show()
+    return fig, axes, semilog
 
 def commutator(A, B):
     return A @ B - B @ A
 
 if __name__ == "__main__":
-    period = 2 * np.pi
+    #Parameters
+    period = 2 * np.pi/5
     order = 10
     t_0 = 0
     N_t = 1000
 
+    #Approximation
     t_grid = np.linspace(0, period, N_t)
     Lambda, F = floquet_magnus_expansion(H_func, t_grid, order)
-    
-    #plot(Lambda, order)
     U_exact = exact_evolution(H_func, t_grid, 400)
     U_FM = FM_evolution(Lambda, order, F, t_grid, 400)
-    #print(U_exact @ U_exact.conj().T) #Check unitarity of exact evolution operator
-    #print(U_FM @ U_FM.conj().T) #Check unitarity of FM evolution operator
 
-    
-
+    #Analysis
+    plot(Lambda, order)
     fro_norm, fidelity = evaluate_accuracy(U_FM, U_exact)
     print(f"Frobenius Norm: {fro_norm}")
     print(f"Fidelity: {fidelity}") 
