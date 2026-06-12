@@ -6,6 +6,7 @@ from scipy.linalg import expm
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import customtkinter as ctk
+import math
 from scipy.integrate import cumulative_trapezoid
 from time import process_time, time
 
@@ -140,7 +141,7 @@ def bloch_siegert_int(omega, A, s):
     Sp = Sx + 1j*Sy
     Sm = Sx - 1j*Sy
     def H(t):
-        return (A/2) * (Sp*(1 + np.exp(-2j*omega*t)) + Sm*(1 + np.exp(2j*omega*t)))
+        return (A/2) * (Sp*(1 + np.exp(2j*omega*t)) + Sm*(1 + np.exp(-2j*omega*t)))
     return H
 
 def bloch_siegert_lab(omega, A, s):
@@ -291,33 +292,51 @@ def comparison_plot(aht_sys, floq_sys):
     fig.tight_layout()
     fig.savefig('plots/Comparison', dpi=300)
 
-def transition_plot(sys):
+def transition_plot(axs, eps, aht_sys, floq_sys):
     psi_0 = np.array([1., 0.], dtype=complex)
-    floquet = sys.Floquet
-    kick = sys.kick
-    # Paper's "Ef": just the effective Hamiltonian
+    floquet = floq_sys.Floquet
+    floquet_kick = floq_sys.kick
+    aht = aht_sys.Floquet
+    aht_kick = aht_sys.kick
+    #effective Hamiltonian
     psi_ef = floquet @ psi_0
     P_ef = np.abs(psi_ef[:, 1])**2
-
-    # Paper's "FM": full propagator with kick
-    
-    psi_fm = (kick @ floquet) @ (kick[0].conj().T @ psi_0)
+    #full propagator with kick
+    psi_fm = (floquet_kick @ floquet) @ (floquet_kick[0].conj().T @ psi_0)
     P_fm = np.abs(psi_fm[:, 1])**2
-
-    # Exact
-    psi_exact = sys.U_exact @ psi_0
+    #AHT propagator with kick
+    psi_aht_kick = (aht_kick @ aht) @ psi_0
+    P_aht_kick = np.abs(psi_aht_kick[:,1])**2
+    #Exact
+    psi_exact = aht_sys.U_exact @ psi_0
     P_exact = np.abs(psi_exact[:, 1])**2
 
-    fig, ax = plt.subplots()
-    ax.plot(sys.t_grid / sys.period, P_ef,    label="Ef")
-    ax.plot(sys.t_grid / sys.period, P_fm,    label="FM")
-    ax.plot(sys.t_grid / sys.period, P_exact, label="Exact")
-    ax.set_xlabel("t/T")
-    ax.set_ylabel("Transition Probability")
-    ax.set_title(f"Figure 5 reproduction")
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig("plots/Transition_Probability")
+    axs[0].plot(aht_sys.t_grid / aht_sys.period, P_ef,    label="Ef")
+    axs[0].plot(aht_sys.t_grid / aht_sys.period, P_fm,    label="FM")
+    axs[0].plot(aht_sys.t_grid / aht_sys.period, P_aht_kick,    label="AHT + Kick")
+    axs[0].plot(aht_sys.t_grid / aht_sys.period, P_exact, label="Exact")
+    axs[0].set_xlabel("t/T")
+    axs[0].set_ylabel("Transition Probability")
+    axs[0].set_title(rf"($\varepsilon = {eps}$)")
+    axs[0].legend()
+    axs[1].plot(aht_sys.t_grid / aht_sys.period, P_ef-P_exact,    label="Ef")
+    axs[1].plot(aht_sys.t_grid / aht_sys.period, P_fm-P_exact,    label="FM")
+    axs[1].plot(aht_sys.t_grid / aht_sys.period, P_aht_kick-P_exact,    label="AHT + Kick")
+    axs[1].set_xlabel("t/T")
+    axs[1].set_ylabel("Probability Difference")
+    axs[1].set_title(f"Error")
+    axs[1].legend()
+
+def H_eff_error(sys):
+    psi_0 = np.array([1., 0.], dtype=complex)
+    floquet = sys.Floquet
+    psi_ef = floquet @ psi_0
+    P_ef = np.abs(psi_ef[:, 1])**2
+    psi_exact = sys.U_exact @ psi_0
+    P_exact = np.abs(psi_exact[:, 1])**2
+    error = np.sqrt(np.mean(np.square(P_ef-P_exact)))
+    return error
+
 
 if __name__ == "__main__":
     start_ptime = process_time()
@@ -327,21 +346,48 @@ if __name__ == "__main__":
     
 
     #Runs the system twice to get all the operators
-    omega = 1
-    eps = 1
-    spin = 0.5
-    aht_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=3, periods=2, aht=True)
-    aht_sys.run()
-    floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=3, periods=2, aht=False)
-    floq_sys.run()
+    
 
     # LOOKS DIFFERENT BECAUSE THEY PLOT TRANSITION PROB AND I PLOT EXPECTATION VALUE
     #Plots full motion for each operator
-    comparison_plot(aht_sys, floq_sys)
+    omega = 1
+    spin = 0.5
+    order = 3
+    periods = 3
 
+    fig, axs = plt.subplots(2,3, figsize=(16,9))
+    epsilons = [0.2, 1, 3]
+    for i,eps in enumerate(epsilons):
+        aht_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=math.ceil(periods/eps), aht=True)
+        aht_sys.run()
+        floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=math.ceil(periods/eps), aht=False)
+        floq_sys.run()
+        transition_plot(axs[:,i], eps, aht_sys, floq_sys)
+    fig.suptitle("Transition Probability Plots")
+    fig.tight_layout()
+    fig.savefig('plots/Transition_Probability', dpi=200)
     
-    transition_plot(floq_sys)
+    """
+    fig, axs = plt.subplots(1)
+    epsilons = np.linspace(0.1, 1.5, 30)
+    errors = []
+    for i, eps in enumerate(epsilons):
+        floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=math.ceil(periods/eps), aht=False)
+        floq_sys.run()
+        errors.append(H_eff_error(floq_sys))
+    axs.plot(epsilons, errors)
+    axs.set_title(r"Root Mean Square Error vs $\varepsilon$")
+    axs.set_xlabel(r"$\epsilon$")
+    axs.set_ylabel("Root Mean Square Error")
+    fig.savefig('plots/Error_Plot')
 
+    eps = 1
+    aht_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=2, aht=True)
+    aht_sys.run()
+    floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=2, aht=False)
+    floq_sys.run()
+
+    comparison_plot(aht_sys, floq_sys)
     #Plots various qualities of the system
     fig, axs = plt.subplots(2,2, figsize=(8,6))
     accuracy_plot(axs[0,0], floq_sys)
@@ -350,7 +396,7 @@ if __name__ == "__main__":
     quasienergy_plot(axs[1,1], floq_sys, s=0.5)
     fig.tight_layout()
     plt.savefig('plots/Floquet-Magnus_Plots')
-
+    """
     #Times the computation
     end_ptime = process_time()
     end_rtime = time()
