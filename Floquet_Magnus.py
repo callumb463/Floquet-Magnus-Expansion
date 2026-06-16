@@ -1,22 +1,18 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 import numpy as np
 from sympy import bernoulli, factorial
-from scipy.linalg import expm
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Button, Slider
-import customtkinter as ctk
-import math
 from scipy.integrate import cumulative_trapezoid
 from time import process_time, time
+import math
 
 @dataclass
 class FloquetSystem:
-    H_func: Callable          # H_func(t) -> matrix — omega/A baked in via closure
-    omega: float
+    H_func: Callable          # H_func(t) -> matrix; H_func.omega supplies the drive frequency
     order: int
     periods: int
-    N_t: int = 500
+    N_t: int = 1000
     aht: bool = True
     Lambda: object = None
     F: object = None
@@ -25,6 +21,10 @@ class FloquetSystem:
     kick: object = None
     Floquet: object = None
     
+    @property
+    def omega(self):
+        return self.H_func.omega
+
     @property
     def period(self):
         return 2 * np.pi / self.omega
@@ -38,7 +38,6 @@ class FloquetSystem:
         if compute_propagators:
             self.U_exact = self.exact_evolution()
             self.U_FM, self.kick, self.Floquet = self.FM_evolution()
-            
 
     def floquet_magnus_expansion(self, aht):
         omega = self.omega
@@ -100,12 +99,15 @@ class FloquetSystem:
     def exact_evolution(self):
         t_grid = self.t_grid
         H_func = self.H_func
+        dt = np.diff(t_grid)
+        t_mid = (t_grid[1:] + t_grid[:-1]) / 2  # midpoints
+        H_mid = np.array([H_func(t) for t in t_mid])
+        steps = expm_herm(H_mid, (-1j * dt)[:, np.newaxis])
+
         U = np.eye(H_func(0).shape[0], dtype=complex)
         Us = [U]
-        for i in range(1, len(self.t_grid)):
-            dt = t_grid[i] - t_grid[i-1]
-            t_mid = (t_grid[i] + t_grid[i-1]) / 2  # midpoint
-            U = expm(-1j * H_func(t_mid) * dt) @ U
+        for step in steps:
+            U = step @ U
             Us.append(U)
         return np.array(Us)
 
@@ -114,8 +116,9 @@ class FloquetSystem:
         F_sum = sum(self.F[n] for n in range(self.order))
         Lambda_tiled = np.tile(Lambda_sum, (self.periods, 1, 1))
 
-        kick_op = np.array([expm(-1j * Lambda_tiled[idx]) for idx in range(len(self.t_grid))])
-        floquet_op = np.array([expm(-1j * F_sum * t) for t in self.t_grid])
+        kick_op = expm_herm(Lambda_tiled, -1j)
+        # F_sum is fixed across all t, so diagonalize it once and reuse for every t
+        floquet_op = expm_herm(F_sum, (-1j * self.t_grid)[:, np.newaxis])
         
         U = kick_op @ floquet_op 
         return U, kick_op, floquet_op
@@ -128,12 +131,14 @@ def bloch_siegert_int(omega, A, s):
     Sm = Sx - 1j*Sy
     def H(t):
         return (A/2) * (Sp*(1 + np.exp(2j*omega*t)) + Sm*(1 + np.exp(-2j*omega*t)))
+    H.omega = omega
     return H
 
 def bloch_siegert_lab(omega, A, s):
     Sx, Sy, Sz = spin_matrices(s)
     def H(t):
         return Sz + A*np.cos(omega*t)*Sx
+    H.omega = omega
     return H
 
 def evaluate_accuracy(U1, U2):
@@ -143,6 +148,12 @@ def evaluate_accuracy(U1, U2):
 
 def commutator(A, B):
     return A @ B - B @ A
+
+def expm_herm(H, scale):
+    #Faster exponentiation via eigendecomposition. Also vectorised which is fast
+    eigvals, eigvecs = np.linalg.eigh(H)
+    exp_d = np.exp(scale * eigvals)
+    return eigvecs @ (exp_d[..., :, None] * np.swapaxes(eigvecs, -1, -2).conj())
 
 def expectation(psi, op):
         return np.real(np.einsum('ti,ij,tj->t', psi.conj(), op, psi))
@@ -179,8 +190,7 @@ def accuracy_plot(ax, sys):
     for o in orders_to_test:
         subsys = FloquetSystem(
             H_func=bloch_siegert_int(omega=sys.omega, A=1, s=1/2),
-            omega=sys.omega, 
-            order=o, 
+            order=o,
             N_t=sys.N_t, 
             periods=1)
         subsys.run()
@@ -203,7 +213,6 @@ def convergence_plot(ax, sys, A, s):
     for freq in freq_to_test:
         subsys = FloquetSystem(
             H_func=bloch_siegert_int(omega=freq, A=A, s=s),
-            omega=freq,
             order=sys.order,
             periods=1
         )
@@ -219,7 +228,7 @@ def micromotion_dev_plot(ax, sys):
     Lambda_sum = sum(sys.Lambda[n] for n in range(sys.order))
     t_grid_one_period = np.linspace(0, sys.period, sys.N_t)
     t_in_periods = t_grid_one_period / sys.period
-    P = np.array([expm(-1j * Lambda_sum[idx]) for idx in range(sys.N_t)])
+    P = expm_herm(Lambda_sum, -1j)
     deviation = np.linalg.norm(P - np.eye(P.shape[1])[np.newaxis, :, :], axis=(-2, -1))
     ax.plot(t_in_periods, deviation)
     ax.set_xlabel(r"$t\,/\,T$")
@@ -232,7 +241,6 @@ def quasienergy_plot(ax, sys, A_max=5, n_amps=10, s=0.5):
     for amp in amp_to_test:
         subsys = FloquetSystem(
             H_func=bloch_siegert_int(omega=sys.omega, A=amp, s=s),
-            omega=sys.omega,
             order=sys.order,
             periods=1
         )
@@ -323,32 +331,32 @@ def H_eff_error(sys):
     error = np.sqrt(np.mean(np.square(P_ef-P_exact)))
     return error
 
+def magnus_decay_rate(H_func, order_max, n_fit=4):
+    #Local decay/growth rate of ||F_n|| vs n, fit over the last n_fit orders.
+    subsys = FloquetSystem(H_func=H_func, order=order_max, periods=1, N_t=50)
+    subsys.run(compute_propagators=False)
+    F_norms = np.array([np.linalg.norm(subsys.F[n], 'fro') for n in range(order_max)])
+    n_fit = min(n_fit, order_max - 1)
+    orders_fit = np.arange(order_max - n_fit, order_max)
+    log_norms = np.log(F_norms[-n_fit:] + 1e-300)
+    slope, _ = np.polyfit(orders_fit, log_norms, 1)
+    return slope
+
 def phase_plot():
-    periods = 3
     spin = 0.5
-    fig, axs = plt.subplots(1)
-    epsilons = np.linspace(0.1, 3, 20)
-    omegas = np.linspace(0.1, 8, 20)
-    orders = [2,3]
-    error_grids = {}
-    for order in orders:
-        grid = np.zeros((len(omegas), len(epsilons)))
-        for i, eps in enumerate(epsilons):
-            for j, omega in enumerate(omegas):
-                floq_sys = FloquetSystem(
-                    H_func=bloch_siegert_int(omega=omega, A=eps, s=spin),
-                    omega=omega,
-                    order=order,
-                    periods=math.ceil(periods/eps),
-                    aht=False
-                )
-                floq_sys.run()
-                grid[j, i] = H_eff_error(floq_sys)
-        error_grids[order] = grid
+    epsilons = np.linspace(0.1, 3, 40)
+    omegas = np.linspace(0.1, 8, 40)
+    order_max = 10  # decay-rate diagnostic needs no propagators, so this is cheap
+
+    decay_rate = np.zeros((len(omegas), len(epsilons)))
+    for i, eps in enumerate(epsilons):
+        for j, omega in enumerate(omegas):
+            decay_rate[j, i] = magnus_decay_rate(
+                bloch_siegert_int(omega=omega, A=eps, s=spin), order_max
+            )
 
     np.savez('error_grids.npz',
-         grid_low=error_grids[2],
-         grid_high=error_grids[3],
+         decay_rate=decay_rate,
          epsilons=epsilons,
          omegas=omegas)
     
@@ -368,19 +376,18 @@ def main():
     fig, axs = plt.subplots(2,3, figsize=(16,9))
     epsilons = [0.2, 1, 3]
     for i,eps in enumerate(epsilons):
-        aht_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=math.ceil(periods/eps), aht=True)
+        aht_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), order=order, periods=math.ceil(periods/eps), aht=True)
         aht_sys.run()
-        floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=math.ceil(periods/eps), aht=False)
+        floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), order=order, periods=math.ceil(periods/eps), aht=False)
         floq_sys.run()
         transition_plot(axs[:,i], eps, aht_sys, floq_sys)
     fig.suptitle("Transition Probability Plots")
     fig.tight_layout()
     fig.savefig('plots/Transition_Probability', dpi=200)
-    
     eps = 1
-    aht_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=2, aht=True)
+    aht_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), order=order, periods=2, aht=True)
     aht_sys.run()
-    floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), omega=omega, order=order, periods=2, aht=False)
+    floq_sys = FloquetSystem(H_func=bloch_siegert_int(omega=omega, A=eps, s=spin), order=order, periods=2, aht=False)
     floq_sys.run()
 
     comparison_plot(aht_sys, floq_sys)
