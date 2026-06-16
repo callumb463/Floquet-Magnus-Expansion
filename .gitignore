@@ -5,6 +5,6 @@ __pycache__/
 .DS_Store
 restats
 error_grids.npz
-Plotter
-notes
-Profiler
+Plotter.py
+notes/
+Profiler.py
