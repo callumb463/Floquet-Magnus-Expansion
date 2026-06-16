@@ -124,7 +124,6 @@ class FloquetSystem:
         return U, kick_op, floquet_op
 
 
-
 def bloch_siegert_int(omega, A, s):
     Sx, Sy, Sz = spin_matrices(s)
     Sp = Sx + 1j*Sy
@@ -134,11 +133,32 @@ def bloch_siegert_int(omega, A, s):
     H.omega = omega
     return H
 
-def bloch_siegert_lab(omega, A, s):
-    Sx, Sy, Sz = spin_matrices(s)
+def homonuclear_dipolar_H(N, omega_p, b_pq, beta_pq, gamma_pq, omega_r, spin=0.5):
+    Ix, Iy, Iz = build_spin_operators(N, spin)
+
+    dip_op = {
+        (p, q): 2 * (Iz[p] @ Iz[q]) - (Ix[p] @ Ix[q] + Iy[p] @ Iy[q])
+        for p in range(N) for q in range(p + 1, N)
+    }
+
+    def omega_pq_n(p, q, n):
+        b, beta, gamma = b_pq[p][q], beta_pq[p][q], gamma_pq[p][q]
+        if n == 1:
+            return -(b / (2 * np.sqrt(2))) * np.sin(2 * beta) * np.exp(-1j * gamma)
+        elif n == 2:
+            return (b / 4) * np.sin(beta) ** 2 * np.exp(-2j * gamma)
+        raise ValueError("n must be 1 or 2")
+
+    H_n = {0: sum(omega_p[p] * Iz[p] for p in range(N))}
+    for n in (1, 2):
+        H_n[n] = sum(omega_pq_n(p, q, n) * dip_op[(p, q)] for (p, q) in dip_op)
+        H_n[-n] = H_n[n].conj().T
+
     def H(t):
-        return Sz + A*np.cos(omega*t)*Sx
-    H.omega = omega
+        return sum(H_n[n] * np.exp(1j * n * omega_r * t) for n in (-2, -1, 0, 1, 2))
+
+    H.omega = omega_r
+    H.H_n = H_n
     return H
 
 def evaluate_accuracy(U1, U2):
@@ -173,6 +193,25 @@ def spin_matrices(s):
     Sy = (Sp - Sm) / (2j)
     
     return Sx, Sy, Sz
+
+def build_spin_operators(N, spin=0.5):
+    """Returns Ix, Iy, Iz as lists of N-particle matrices (Ix[p] acts on spin p)."""
+    Sx, Sy, Sz = spin_matrices(spin)
+    dim_single = Sx.shape[0]
+
+    def op_on_spin(single_op, p):
+        ops = [np.eye(dim_single, dtype=complex)] * N
+        ops[p] = single_op
+        out = ops[0]
+        for o in ops[1:]:
+            out = np.kron(out, o)
+        return out
+
+    Ix = [op_on_spin(Sx, p) for p in range(N)]
+    Iy = [op_on_spin(Sy, p) for p in range(N)]
+    Iz = [op_on_spin(Sz, p) for p in range(N)]
+    return Ix, Iy, Iz
+
 
 def bloch_vector_error(U_approx, U_exact, psi_0, s):
     Sx, Sy, Sz = spin_matrices(s)
@@ -343,7 +382,7 @@ def magnus_decay_rate(H_func, order_max, n_fit=4):
     return slope
 
 def phase_plot():
-    spin = 0.5
+    spin = 1
     epsilons = np.linspace(0.1, 3, 40)
     omegas = np.linspace(0.1, 8, 40)
     order_max = 10  # decay-rate diagnostic needs no propagators, so this is cheap
@@ -360,18 +399,32 @@ def phase_plot():
          epsilons=epsilons,
          omegas=omegas)
     
-
 def main():
-    #Plots full motion for each operator
-    omega = 1
-    spin = 0.5
-    order = 3
-    periods = 3
-    epsilon = 1
+    N=3
 
-    phase_plot()
+    omega_p = 2 * np.pi * np.array([0.0, 3000.0, 7000.0])
 
+    b_pq = np.zeros((N, N))
+    b_pq[0, 1] = b_pq[1, 0] = -2 * np.pi * 2250.0   # spins 1-2, r=1.5 A
+    b_pq[1, 2] = b_pq[2, 1] = -2 * np.pi * 2250.0   # spins 2-3, r=1.5 A
+    b_pq[0, 2] = b_pq[2, 0] = -2 * np.pi *  490.0   # spins 1-3, r=2.5 A
 
+    beta_pq = np.zeros((N, N))
+    beta_pq[0, 1] = beta_pq[1, 0] = np.deg2rad(60)
+    beta_pq[1, 2] = beta_pq[2, 1] = np.deg2rad(35)
+    beta_pq[0, 2] = beta_pq[2, 0] = np.deg2rad(90)
+
+    gamma_pq = np.zeros((N, N))
+    gamma_pq[0, 1] = gamma_pq[1, 0] = np.deg2rad(0)
+    gamma_pq[1, 2] = gamma_pq[2, 1] = np.deg2rad(240)
+    gamma_pq[0, 2] = gamma_pq[2, 0] = np.deg2rad(120)
+
+    omega_r = 2 * np.pi * 10000.0
+
+    H_func = homonuclear_dipolar_H(N, omega_p, b_pq, beta_pq, gamma_pq, omega_r)
+    sys = FloquetSystem(H_func=H_func, order=4, periods=2, aht=False)
+    sys.run()
+    print(sys.F)
     """
     fig, axs = plt.subplots(2,3, figsize=(16,9))
     epsilons = [0.2, 1, 3]
