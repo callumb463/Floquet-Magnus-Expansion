@@ -5,6 +5,7 @@ from sympy import bernoulli, factorial
 import matplotlib.pyplot as plt
 from scipy.integrate import cumulative_trapezoid
 from time import process_time, time
+from itertools import combinations
 import math
 
 @dataclass
@@ -161,6 +162,66 @@ def homonuclear_dipolar_H(N, omega_p, b_pq, beta_pq, gamma_pq, omega_r, spin=0.5
     H.H_n = H_n
     return H
 
+def omega_eff(b_pq, beta_pq, gamma_pq, omega_r, N):
+    """
+    omega_eff^{pqr}: coefficient of Iz_p (I+_q I-_r - I-_q I+_r) in
+
+        Hbar2 = (1/2) sum_{n!=0} [H^(n), H^(-n)] / (n*omega_r)
+
+    Implements the corrected version of the supplementary-material formula:
+
+        omega_eff^{pqr} = sum_{n!=0} (-1/(n*omega_r)) *
+            ( (1/2) * omega_pq^(n) * omega_pr^(-n)
+                    + omega_pq^(n) * omega_qr^(-n)
+                    - omega_pr^(n) * omega_qr^(-n) )
+
+    (sign of the third/"qr" term flipped, prefactor doubled, relative to
+    the supplementary material as given -- verified against the exact
+    matrix decomposition of Hbar2 to machine precision for N=3 and N=4).
+
+    Parameters
+    ----------
+    b_pq, beta_pq, gamma_pq : (N, N) arrays
+        Dipolar coupling geometry, symmetric (b_pq[p][q] == b_pq[q][p], etc.),
+        same convention as homonuclear_dipolar_H.
+    omega_r : float
+        Spinning/drive frequency.
+    N : int
+        Number of spins.
+
+    Returns
+    -------
+    dict {(p, q, r): complex omega_eff} for every distinct triple of spins,
+    with q < r for each choice of "z" spin p.
+    """
+    def omega_pq_n(p, q, n):
+        b, beta, gamma = b_pq[p][q], beta_pq[p][q], gamma_pq[p][q]
+        if n == 1:
+            return -(b / (2 * np.sqrt(2))) * np.sin(2 * beta) * np.exp(-1j * gamma)
+        elif n == 2:
+            return (b / 4) * np.sin(beta) ** 2 * np.exp(-2j * gamma)
+        raise ValueError("n must be 1 or 2")
+
+    def omega_n(p, q, n):
+        # extends omega_pq_n to negative n via Hermiticity: H_{-n} = H_n^dagger
+        if n > 0:
+            return omega_pq_n(p, q, n)
+        return np.conj(omega_pq_n(p, q, -n))
+
+    omega_eff_dict = {}
+    for a, b, c in combinations(range(N), 3):
+        for p, q, r in ((a, b, c), (b, a, c), (c, a, b)):
+            total = 0j
+            for n in (-2, -1, 1, 2):
+                bracket = (
+                    0.5 * omega_n(p, q, n) * omega_n(p, r, -n)
+                    + omega_n(p, q, n) * omega_n(q, r, -n)
+                    - omega_n(p, r, n) * omega_n(q, r, -n)
+                )
+                total += -bracket / (n * omega_r)
+            omega_eff_dict[(p, q, r)] = total
+    return omega_eff_dict
+
 def evaluate_accuracy(U1, U2):
     fro_norm = np.linalg.norm(U1 - U2, 'fro')
     fidelity = abs(np.trace(U1.conj().T @ U2))**2 / U1.shape[0]**2
@@ -212,6 +273,24 @@ def build_spin_operators(N, spin=0.5):
     Iz = [op_on_spin(Sz, p) for p in range(N)]
     return Ix, Iy, Iz
 
+def decompose_spin(F2, N, spin=0.5):
+    Ix, Iy, Iz = build_spin_operators(N, spin)
+    Ip = [Ix[k] + 1j * Iy[k] for k in range(N)]
+    Im = [Ix[k] - 1j * Iy[k] for k in range(N)]
+
+    omega_eff = {}
+    recon = np.zeros_like(F2)
+
+    for a, b, c in combinations(range(N), 3):
+        for p, q, r in ((a, b, c), (b, a, c), (c, a, b)):
+            O = Iz[p] @ (Ip[q] @ Im[r] - Im[q] @ Ip[r])
+            norm = np.trace(O.conj().T @ O)
+            w = np.trace(O.conj().T @ F2) / norm
+            omega_eff[(p, q, r)] = w
+            recon += w * O
+
+    residual = np.linalg.norm(F2 - recon)
+    return omega_eff, residual
 
 def bloch_vector_error(U_approx, U_exact, psi_0, s):
     Sx, Sy, Sz = spin_matrices(s)
@@ -424,7 +503,15 @@ def main():
     H_func = homonuclear_dipolar_H(N, omega_p, b_pq, beta_pq, gamma_pq, omega_r)
     sys = FloquetSystem(H_func=H_func, order=4, periods=2, aht=False)
     sys.run()
-    print(sys.F)
+
+    omega_eff_approx, residual = decompose_spin(sys.F[1], 3)
+    print(omega_eff_approx)
+
+    omega_eff_analytic = omega_eff(b_pq, beta_pq, gamma_pq, omega_r, 3)
+    print(omega_eff_analytic)
+
+
+
     """
     fig, axs = plt.subplots(2,3, figsize=(16,9))
     epsilons = [0.2, 1, 3]
