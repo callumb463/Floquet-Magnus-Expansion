@@ -164,11 +164,7 @@ def homonuclear_dipolar_H(N, omega_p, b_pq, beta_pq, gamma_pq, omega_r, spin=0.5
 
 def omega_eff(b_pq, beta_pq, gamma_pq, omega_r, N):
     """
-    omega_eff^{pqr}: coefficient of Iz_p (I+_q I-_r - I-_q I+_r) in
-
-        Hbar2 = (1/2) sum_{n!=0} [H^(n), H^(-n)] / (n*omega_r)
-
-    Implements the corrected version of the supplementary-material formula:
+    Implements this version of the omega_eff formula:
 
         omega_eff^{pqr} = sum_{n!=0} (-1/(n*omega_r)) *
             ( (1/2) * omega_pq^(n) * omega_pr^(-n)
@@ -176,8 +172,7 @@ def omega_eff(b_pq, beta_pq, gamma_pq, omega_r, N):
                     - omega_pr^(n) * omega_qr^(-n) )
 
     (sign of the third/"qr" term flipped, prefactor doubled, relative to
-    the supplementary material as given -- verified against the exact
-    matrix decomposition of Hbar2 to machine precision for N=3 and N=4).
+    the supplementary material as given -- verified for N=3 and N=4).
 
     Parameters
     ----------
